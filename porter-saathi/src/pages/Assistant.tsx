@@ -1,13 +1,22 @@
-// src/components/Assistant.tsx
+// src/pages/Assistant.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box, Paper, Stack, Typography, IconButton, TextField, Chip, Button,
-  InputAdornment, Divider, Tooltip, Grid
+  InputAdornment, Divider, Tooltip, Grid, Alert
 } from "@mui/material";
 import MicIcon from "@mui/icons-material/Mic";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SendIcon from "@mui/icons-material/Send";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
+import NavigationIcon from "@mui/icons-material/Navigation";
+import LocationOnIcon from "@mui/icons-material/LocationOn";
+import MapIcon from "@mui/icons-material/Map";
+import WeatherIcon from "@mui/icons-material/Cloud";
+
+// Import navigation services
+import navigationService from "../services/navigationService";
+import type { Location, Route } from "../services/navigationService";
+import MapComponent from "../Components/MapComponent";
 
 // ---- Speech APIs (browser guards)
 const SpeechRecognition: any =
@@ -27,6 +36,21 @@ interface AiResponseBody {
   orders?: any[];
   trackingId?: string;
   error?: string;
+}
+
+interface NavigationState {
+  isNavigating: boolean;
+  currentLocation: Location | null;
+  route: Route | null;
+  destination: string;
+  currentStep: number;
+  showMap: boolean;
+  autoAdvance: boolean;
+  isPickupNavigation: boolean;
+  pickupOrder: any | null;
+  weatherAlert: string | null;
+  showWeatherAlert: boolean;
+  lastWeatherCheck: number;
 }
 
 // ---- config
@@ -82,6 +106,20 @@ const bubble = (role: Role) =>
         border: "1px solid rgba(3,70,219,0.15)",
       };
 
+// Helper function to detect navigation commands
+function extractDestination(text: string) {
+  const englishMatch = text.match(/(?:navigate|go to|take me to|directions to|route to)\s+(.+)/i);
+  if (englishMatch) return englishMatch[1].trim();
+  
+  const hindiMatch1 = text.match(/mujhe\s+(.+?)\s+le chalo/i);
+  if (hindiMatch1) return hindiMatch1[1].trim();
+  
+  const hindiMatch2 = text.match(/(?:le chalo|jao|rasta dikhao|direction do)\s+(.+)/i);
+  if (hindiMatch2) return hindiMatch2[1].trim();
+  
+  return null;
+}
+
 const quickChips = [
   { key: "emergency",  label: "🚨 Emergency",        text: "Call emergency helpline" },
   { key: "insurance",  label: "🛡️ Insurance Guide",  text: "Show me the insurance guide" },
@@ -89,6 +127,9 @@ const quickChips = [
   { key: "earnings",   label: "💰 Earnings Today",    text: "Show my earnings for today" },
   { key: "growth",     label: "📈 Business Growth",   text: "Give me a quick business growth summary for this week" },
   { key: "onboarding", label: "🧭 Onboarding Help",   text: "Guide me through the onboarding steps" },
+  { key: "navigate",   label: "🧭 Navigate",          text: "Navigate to Manyata Tech Park" },
+  { key: "location",   label: "📍 My Location",       text: "Where am I?" },
+  { key: "weather",    label: "🌦️ Weather Check",     text: "What's the weather like?" },
 ] as const;
 
 // ---- server call
@@ -109,8 +150,174 @@ const Assistant: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState("");
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [navigation, setNavigation] = useState<NavigationState>({
+    isNavigating: false,
+    currentLocation: null,
+    route: null,
+    destination: "",
+    currentStep: 0,
+    showMap: false,
+    autoAdvance: true,
+    isPickupNavigation: false,
+    pickupOrder: null,
+    weatherAlert: null,
+    showWeatherAlert: false,
+    lastWeatherCheck: 0
+  });
   const listRef = useRef<HTMLDivElement>(null);
   const recRef = useRef<any>(null);
+
+  const addMsg = (role: Role, content: string) =>
+    setMessages((prev) => [...prev, { role, content, ts: Date.now() }]);
+
+  // Navigation helper functions
+  const startNavigation = useCallback(async (destination: string, isPickup = false, pickupOrder = null) => {
+    try {
+      if (!navigation.currentLocation) {
+        const location = await navigationService.getCurrentLocation();
+        setNavigation(prev => ({ ...prev, currentLocation: location }));
+      }
+
+      // Check weather before starting navigation
+      const weatherAlert = await navigationService.checkWeatherAlert(destination);
+      if (weatherAlert) {
+        setNavigation(prev => ({
+          ...prev,
+          weatherAlert: weatherAlert,
+          showWeatherAlert: true,
+          destination: destination,
+          isPickupNavigation: isPickup,
+          pickupOrder: pickupOrder
+        }));
+        
+        const reply = `Weather check: ${weatherAlert} Do you still want to navigate?`;
+        addMsg("ai", reply); 
+        speak(reply);
+        return;
+      }
+
+      const route = await navigationService.startNavigation(destination);
+      setNavigation(prev => ({
+        ...prev,
+        isNavigating: true,
+        route,
+        destination,
+        currentStep: 0,
+        isPickupNavigation: isPickup,
+        pickupOrder: pickupOrder,
+        weatherAlert: null,
+        showWeatherAlert: false
+      }));
+
+      const reply = `Starting navigation to ${destination}. Total distance: ${route.totalDistance}, estimated time: ${route.totalDuration}. First instruction: ${route.steps[0]?.instruction}`;
+      addMsg("ai", reply); 
+      speak(reply);
+
+      // Start location watching for real-time updates
+      if (navigation.autoAdvance) {
+        navigationService.startLocationWatch(
+          async (location) => {
+            setNavigation(prev => ({ ...prev, currentLocation: location }));
+            
+            // Check weather every 2 minutes during navigation
+            const now = Date.now();
+            if (now - (navigation.lastWeatherCheck || 0) > 120000) {
+              const weatherAlert = await navigationService.checkWeatherAtLocation(location);
+              if (weatherAlert) {
+                setNavigation(prev => ({ ...prev, weatherAlert, lastWeatherCheck: now }));
+                addMsg("ai", weatherAlert); 
+                speak(weatherAlert);
+              }
+            }
+          },
+          (nextInstruction) => {
+            if (nextInstruction === "Destination reached!") {
+              if (navigation.isPickupNavigation && navigation.pickupOrder) {
+                const reply = `Reached pickup location! You can collect ${navigation.pickupOrder.item}. Tracking ID: ${navigation.pickupOrder.trackingId}`;
+                addMsg("ai", reply); 
+                speak(reply);
+              } else {
+                const reply = "Destination reached! Navigation completed successfully.";
+                addMsg("ai", reply); 
+                speak(reply);
+              }
+              setNavigation(prev => ({
+                ...prev,
+                isNavigating: false,
+                route: null,
+                destination: "",
+                currentStep: 0,
+                isPickupNavigation: false,
+                pickupOrder: null,
+                weatherAlert: null,
+                showWeatherAlert: false
+              }));
+            } else {
+              setNavigation(prev => ({ ...prev, currentStep: prev.currentStep + 1 }));
+              const reply = `GPS auto-advance: ${nextInstruction}`;
+              addMsg("ai", reply); 
+              speak(reply);
+            }
+          }
+        );
+      } else {
+        navigationService.startLocationWatch((location) => {
+          setNavigation(prev => ({ ...prev, currentLocation: location }));
+        });
+      }
+
+    } catch (error) {
+      console.error('Navigation error:', error);
+      const reply = `Failed to start navigation to ${destination}. Please check location permissions.`;
+      addMsg("ai", reply); 
+      speak(reply);
+    }
+  }, [navigation.currentLocation, navigation.autoAdvance, navigation.isPickupNavigation, navigation.pickupOrder, navigation.lastWeatherCheck, addMsg]);
+
+  const stopNavigation = useCallback(() => {
+    navigationService.stopNavigation();
+    setNavigation(prev => ({
+      ...prev,
+      isNavigating: false,
+      route: null,
+      destination: "",
+      currentStep: 0,
+      isPickupNavigation: false,
+      pickupOrder: null
+    }));
+
+    const reply = "Navigation stopped.";
+    addMsg("ai", reply); 
+    speak(reply);
+  }, [addMsg]);
+
+  const getNextInstruction = useCallback(() => {
+    if (!navigation.route || !navigation.isNavigating) {
+      return null;
+    }
+
+    const nextStep = navigation.route.steps[navigation.currentStep + 1];
+    if (nextStep) {
+      setNavigation(prev => ({ ...prev, currentStep: prev.currentStep + 1 }));
+      navigationService.setCurrentStepIndex(navigation.currentStep + 1);
+      return nextStep.instruction;
+    }
+    return null;
+  }, [navigation.route, navigation.isNavigating, navigation.currentStep]);
+
+  const getCurrentInstruction = useCallback(() => {
+    if (!navigation.route || !navigation.isNavigating) {
+      return null;
+    }
+    return navigation.route.steps[navigation.currentStep]?.instruction;
+  }, [navigation.route, navigation.isNavigating, navigation.currentStep]);
+
+  const isAtFinalStep = useCallback(() => {
+    if (!navigation.route || !navigation.isNavigating) {
+      return false;
+    }
+    return navigation.currentStep >= navigation.route.steps.length - 1;
+  }, [navigation.route, navigation.isNavigating, navigation.currentStep]);
 
   // auto scroll
   useEffect(() => {
@@ -134,8 +341,25 @@ const Assistant: React.FC = () => {
     r.onerror = () => setListening(false);
   }, []);
 
-  const addMsg = (role: Role, content: string) =>
-    setMessages((prev) => [...prev, { role, content, ts: Date.now() }]);
+  // Initialize GPS location on component mount
+  useEffect(() => {
+    const initializeLocation = async () => {
+      try {
+        const location = await navigationService.getCurrentLocation();
+        setNavigation(prev => ({
+          ...prev,
+          currentLocation: location
+        }));
+      } catch (error) {
+        console.error('Failed to get location:', error);
+        const reply = "GPS access denied. Please enable location services for navigation features.";
+        addMsg("ai", reply); 
+        speak(reply);
+      }
+    };
+
+    initializeLocation();
+  }, []);
 
   const handleMic = () => {
     if (!recRef.current) {
@@ -185,6 +409,92 @@ const Assistant: React.FC = () => {
 
     addMsg("user", input);
 
+    // Extract destination for navigation
+    const destination = extractDestination(input);
+
+    // ---- START NAVIGATION ----
+    if (destination) {
+      await startNavigation(destination);
+      return;
+    }
+
+    // ---- STOP NAVIGATION ----
+    if (/stop navigation|end navigation|cancel navigation|navigation band karo|navigation ruko/i.test(input)) {
+      stopNavigation();
+      return;
+    }
+
+    // ---- NEXT INSTRUCTION ----
+    if (/next instruction|what's next|next step|agla instruction|agla step|kya hai agla/i.test(input)) {
+      const instruction = getNextInstruction();
+      if (instruction) {
+        const reply = `Next: ${instruction}`;
+        addMsg("ai", reply); 
+        speak(reply);
+      } else {
+        const reply = "No more navigation instructions available.";
+        addMsg("ai", reply); 
+        speak(reply);
+      }
+      return;
+    }
+
+    // ---- CURRENT LOCATION ----
+    if (/where am i|current location|my location|main kahan hun|mera location/i.test(input)) {
+      if (navigation.currentLocation) {
+        const coords = `${navigation.currentLocation.latitude.toFixed(4)}, ${navigation.currentLocation.longitude.toFixed(4)}`;
+        const placeName = navigation.currentLocation.placeName || 'Unknown Location';
+        const address = navigation.currentLocation.address || coords;
+        
+        const reply = `Your current location: ${placeName} (${coords}). Full address: ${address}`;
+        addMsg("ai", reply); 
+        speak(reply);
+      } else {
+        const reply = "Location not available. Please enable GPS permissions.";
+        addMsg("ai", reply); 
+        speak(reply);
+      }
+      return;
+    }
+
+    // ---- SHOW MAP ----
+    if (/show map|open map|view map|map dikhao|map kholo/i.test(input)) {
+      setNavigation(prev => ({ ...prev, showMap: true }));
+      const reply = "Opening map view. You can see your current location and navigation route.";
+      addMsg("ai", reply); 
+      speak(reply);
+      return;
+    }
+
+    // ---- CLOSE MAP ----
+    if (/close map|hide map|map band karo/i.test(input)) {
+      setNavigation(prev => ({ ...prev, showMap: false }));
+      const reply = "Map closed.";
+      addMsg("ai", reply); 
+      speak(reply);
+      return;
+    }
+
+    // ---- WEATHER CHECK COMMANDS ----
+    if (/weather check|weather status|weather kaisa hai|weather condition|mausam kaisa hai|mausam check|weather update/i.test(input)) {
+      if (navigation.currentLocation) {
+        const weatherAlert = await navigationService.checkWeatherAtLocation(navigation.currentLocation);
+        if (weatherAlert) {
+          addMsg("ai", weatherAlert); 
+          speak(weatherAlert);
+        } else {
+          const reply = "Weather conditions are normal. Safe to drive.";
+          addMsg("ai", reply); 
+          speak(reply);
+        }
+      } else {
+        const reply = "Current location not available for weather check.";
+        addMsg("ai", reply); 
+        speak(reply);
+      }
+      return;
+    }
+
     // Local reminder handling first (client-side utility)
     const reminderMatch = input.match(
       /(remind(?:\s+me)?|reminder|schedule|pickup)[^0-9]*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i
@@ -194,14 +504,14 @@ const Assistant: React.FC = () => {
     // Everything else → unified server endpoint
     try {
       const data = await askServer(input);
-      const reply = data?.reply ?? "I’m not sure about that.";
+      const reply = data?.reply ?? "I'm not sure about that.";
       addMsg("ai", reply);
       speak(reply);
     } catch {
       const r = "Network error. Please try again.";
       addMsg("ai", r); speak(r);
     }
-  }, []);
+  }, [navigation.currentLocation]);
 
   const onSend = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -219,10 +529,178 @@ const Assistant: React.FC = () => {
 
   return (
     <Box sx={{ width: "100%", maxWidth: 960, mx: "auto", py: 3 }}>
+      {/* Weather Alert */}
+      {navigation.showWeatherAlert && navigation.weatherAlert && (
+        <Alert 
+          severity="warning" 
+          sx={{ mb: 2 }}
+          action={
+            <Stack direction="row" spacing={1}>
+              <Button 
+                size="small" 
+                onClick={() => {
+                  const route = navigationService.startNavigation(navigation.destination);
+                  route.then(routeData => {
+                    setNavigation(prev => ({
+                      ...prev,
+                      isNavigating: true,
+                      route: routeData,
+                      currentStep: 0,
+                      weatherAlert: null,
+                      showWeatherAlert: false
+                    }));
+                    const reply = `Starting navigation despite weather alert. Drive carefully!`;
+                    addMsg("ai", reply); 
+                    speak(reply);
+                  });
+                }}
+              >
+                Continue
+              </Button>
+              <Button 
+                size="small" 
+                onClick={() => {
+                  setNavigation(prev => ({
+                    ...prev,
+                    weatherAlert: null,
+                    showWeatherAlert: false,
+                    destination: "",
+                    isPickupNavigation: false,
+                    pickupOrder: null
+                  }));
+                  const reply = "Navigation cancelled due to weather alert.";
+                  addMsg("ai", reply); 
+                  speak(reply);
+                }}
+              >
+                Wait
+              </Button>
+            </Stack>
+          }
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Weather Alert
+          </Typography>
+          {navigation.weatherAlert}
+        </Alert>
+      )}
+
+      {/* Real-time Weather Alert during Navigation */}
+      {navigation.isNavigating && navigation.weatherAlert && !navigation.showWeatherAlert && (
+        <Alert 
+          severity="error" 
+          sx={{ mb: 2 }}
+          action={
+            <Button 
+              size="small" 
+              onClick={() => setNavigation(prev => ({ ...prev, weatherAlert: null }))}
+            >
+              Dismiss
+            </Button>
+          }
+        >
+          {navigation.weatherAlert}
+        </Alert>
+      )}
+
+      {/* Navigation Status */}
+      {navigation.isNavigating && (
+        <Paper 
+          sx={{ 
+            p: 2, 
+            mb: 2, 
+            bgcolor: navigation.isPickupNavigation ? 'success.light' : 'primary.light',
+            color: 'white'
+          }}
+        >
+          <Stack direction="row" alignItems="center" spacing={2}>
+            <NavigationIcon />
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                {navigation.isPickupNavigation ? 'Pickup Navigation' : 'Navigating to'} {navigation.destination}
+              </Typography>
+              {navigation.isPickupNavigation && navigation.pickupOrder && (
+                <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                  📦 {navigation.pickupOrder.item} (Qty: {navigation.pickupOrder.qty}) • ID: {navigation.pickupOrder.trackingId}
+                </Typography>
+              )}
+              <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                {navigation.route && `Distance: ${navigation.route.totalDistance} • Time: ${navigation.route.totalDuration}`}
+              </Typography>
+              {navigation.currentLocation && (
+                <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                  📍 {navigation.currentLocation.placeName || 'Current Location'}
+                </Typography>
+              )}
+            </Box>
+            <Button
+              onClick={() => setNavigation(prev => ({ ...prev, autoAdvance: !prev.autoAdvance }))}
+              sx={{ 
+                bgcolor: navigation.autoAdvance ? 'success.main' : 'grey.500',
+                color: 'white',
+                mr: 1
+              }}
+            >
+              {navigation.autoAdvance ? 'GPS Auto' : 'Manual'}
+            </Button>
+            <Button
+              onClick={stopNavigation}
+              sx={{ bgcolor: 'error.main', color: 'white' }}
+            >
+              Stop
+            </Button>
+          </Stack>
+        </Paper>
+      )}
+
+      {/* Current Navigation Instruction */}
+      {navigation.isNavigating && getCurrentInstruction() && (
+        <Paper sx={{ p: 2, mb: 2, border: '2px solid', borderColor: 'primary.main' }}>
+          <Stack direction="row" alignItems="center" spacing={2}>
+            <LocationOnIcon color="primary" />
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                Step {navigation.currentStep + 1} of {navigation.route?.steps.length}
+              </Typography>
+              <Typography variant="body1">
+                {getCurrentInstruction()}
+              </Typography>
+            </Box>
+            <Button
+              onClick={() => {
+                if (isAtFinalStep()) {
+                  if (navigation.isPickupNavigation && navigation.pickupOrder) {
+                    const reply = `Reached pickup location! You can collect ${navigation.pickupOrder.item}. Tracking ID: ${navigation.pickupOrder.trackingId}`;
+                    addMsg("ai", reply); 
+                    speak(reply);
+                  } else {
+                    const reply = "Destination reached! Navigation completed successfully.";
+                    addMsg("ai", reply); 
+                    speak(reply);
+                  }
+                  stopNavigation();
+                } else {
+                  const next = getNextInstruction();
+                  if (next) {
+                    const reply = `Next: ${next}`;
+                    addMsg("ai", reply); 
+                    speak(reply);
+                  }
+                }
+              }}
+              variant="contained"
+              disabled={navigation.autoAdvance}
+            >
+              {isAtFinalStep() ? (navigation.isPickupNavigation ? 'Pickup!' : 'Reached!') : 'Next'}
+            </Button>
+          </Stack>
+        </Paper>
+      )}
+
       {/* Quick actions: 3 per row on small+ screens, 1 per row on mobile */}
       <Grid container spacing={2} justifyContent="center" sx={{ mb: 3 }}>
         {quickChips.map((c) => (
-          <Grid item xs={12} sm={4} key={c.key} display="flex" justifyContent="center">
+          <Grid size={{ xs: 12, sm: 4 }} key={c.key} display="flex" justifyContent="center">
             <Chip
               label={c.label}
               clickable
@@ -311,6 +789,14 @@ const Assistant: React.FC = () => {
           </Stack>
         </Paper>
       )}
+
+      {/* Map Component */}
+      <MapComponent
+        currentLocation={navigation.currentLocation}
+        destination={navigation.destination}
+        isVisible={navigation.showMap}
+        onClose={() => setNavigation(prev => ({ ...prev, showMap: false }))}
+      />
     </Box>
   );
 };

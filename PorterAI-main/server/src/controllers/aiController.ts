@@ -60,7 +60,7 @@ function extractPickupTime(text: string): Date | null {
   return d;
 }
 
-function parseIntent(text: string): { intent: string; trackingId?: string } {
+function parseIntent(text: string): { intent: string; trackingId?: string; destination?: string } {
   const t = text.toLowerCase();
 
   if (/create (an )?order|place order|i want to order|new order|add order/.test(t)) {
@@ -99,7 +99,40 @@ function parseIntent(text: string): { intent: string; trackingId?: string } {
     return { intent: "update_order" };
   }
 
+  // Navigation intents - English and Hindi
+  // Handle "mujhe X le chalo" pattern specifically
+  const hindiMatch1 = t.match(/mujhe\s+(.+?)\s+le chalo/i);
+  if (hindiMatch1) return { intent: "navigate", destination: cleanDestination(hindiMatch1[1].trim()) };
+  
+  // Handle other patterns
+  const navMatch = t.match(/(?:navigate|go to|take me to|directions to|route to|le chalo|jao|rasta dikhao|direction do)\s+(.+)/i);
+  if (navMatch) return { intent: "navigate", destination: cleanDestination(navMatch[1].trim()) };
+  
+  if (/stop navigation|end navigation|cancel navigation|navigation band karo|navigation ruko/i.test(t)) {
+    return { intent: "stop_navigation" };
+  }
+  
+  if (/next instruction|what's next|next step|agla instruction|agla step|kya hai agla/i.test(t)) {
+    return { intent: "next_instruction" };
+  }
+  
+  if (/where am i|current location|my location|main kahan hun|mera location/i.test(t)) {
+    return { intent: "current_location" };
+  }
+  
+  if (/weather|mausam|weather check|mausam kaisa hai|weather condition/i.test(t)) {
+    return { intent: "weather_check" };
+  }
+
   return { intent: "general" };
+}
+
+// Helper function to clean destination text
+function cleanDestination(destination: string): string {
+  return destination
+    .replace(/\s+(le chalo|jao|dikhao|do)$/i, '')
+    .replace(/\s+(navigate|go|take|directions|route)$/i, '')
+    .trim();
 }
 
 // Use LLM to extract structured order fields from text
@@ -152,6 +185,37 @@ export const aiReply = async (req: Request, res: Response) => {
     history.push({ role: "user", content: text });
 
     const parsed = parseIntent(text);
+
+    // NAVIGATION INTENTS
+    if (parsed.intent === "navigate") {
+      const reply = `Starting navigation to ${parsed.destination}. Please enable GPS permissions for turn-by-turn directions.`;
+      history.push({ role: "assistant", content: reply });
+      return res.json({ reply, action: "navigate", destination: parsed.destination });
+    }
+
+    if (parsed.intent === "stop_navigation") {
+      const reply = "Navigation stopped. You can start a new navigation anytime.";
+      history.push({ role: "assistant", content: reply });
+      return res.json({ reply, action: "stop_navigation" });
+    }
+
+    if (parsed.intent === "next_instruction") {
+      const reply = "Next instruction will be provided by the navigation system. Please check your current location.";
+      history.push({ role: "assistant", content: reply });
+      return res.json({ reply, action: "next_instruction" });
+    }
+
+    if (parsed.intent === "current_location") {
+      const reply = "Your current location will be displayed by the GPS system. Please enable location services.";
+      history.push({ role: "assistant", content: reply });
+      return res.json({ reply, action: "current_location" });
+    }
+
+    if (parsed.intent === "weather_check") {
+      const reply = "Checking weather conditions for your current location. Weather alerts will be shown if needed.";
+      history.push({ role: "assistant", content: reply });
+      return res.json({ reply, action: "weather_check" });
+    }
 
     // CREATE ORDER
     if (parsed.intent === "create_order") {
@@ -314,16 +378,16 @@ export const aiReply = async (req: Request, res: Response) => {
       if (/\badd\b/i.test(text)) {
         const part = text.split(/add/i)[1] ?? "";
         const addText = part.split(/(?:remove|status|assign|pickup)/i)[0];
-        const items = addText.split(/(?:,| and )/i).map(s => s.trim()).filter(Boolean);
+        const items = addText.split(/(?:,| and )/i).map((s: string) => s.trim()).filter(Boolean);
         if (items.length) updates.item = [order.item, items.join(", ")].filter(Boolean).join(", ");
       }
       if (/\bremove\b/i.test(text) && order.item) {
         const part = text.split(/remove/i)[1] ?? "";
         const removeText = part.split(/(?:add|status|assign|pickup)/i)[0];
-        const toRemove = removeText.split(/(?:,| and )/i).map(s => s.trim()).filter(Boolean);
+        const toRemove = removeText.split(/(?:,| and )/i).map((s: string) => s.trim()).filter(Boolean);
         if (toRemove.length) {
           let newItem = order.item;
-          toRemove.forEach(rem => {
+          toRemove.forEach((rem: string) => {
             const re = new RegExp(`\\b${rem}\\b\\s*,?\\s*`, "ig");
             newItem = newItem.replace(re, "");
           });
