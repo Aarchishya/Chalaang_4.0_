@@ -4,7 +4,7 @@ import Grid from "@mui/material/Grid";
 import { Box, Paper, Stack, Typography, TextField, Button } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useSpeech } from "../hooks/useSpeech";
-import VoiceBar from "../components/VoiceBar";
+import VoiceBar from "../Components/VoiceBar";
 
 type DayRecord = { date: string; earnings: number; expenses: number; penalties: number; rewards: number };
 const SAMPLE: DayRecord[] = [

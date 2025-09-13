@@ -5,6 +5,6 @@ import { aiReply } from '../controllers/aiController';
 
 const router = express.Router();
 
-router.post('/ai', aiReply);
+router.post('/', aiReply);
 
 export default router;
