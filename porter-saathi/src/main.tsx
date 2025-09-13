@@ -15,14 +15,32 @@ import Signup from "./pages/Signup";
 import Assistant from "./pages/Assistant";
 import NotFound from "./pages/NotFound";
 
+// NEW pages
+import Finance from "./pages/Finance";
+import Onboarding from "./pages/Onboarding";
+import Sahayata from "./pages/Sahayata";
+
 const router = createBrowserRouter([
-  { path: "/", element: <App />, children: [
+  {
+    path: "/",
+    element: <App />,
+    // (optional) show NotFound for thrown route errors
+    // errorElement: <NotFound />,
+    children: [
       { index: true, element: <Home /> },
       { path: "login", element: <Login /> },
       { path: "signup", element: <Signup /> },
       { path: "assistant", element: <Assistant /> },
+
+      // NEW routes
+      { path: "finance", element: <Finance /> },
+      { path: "onboarding", element: <Onboarding /> },
+      { path: "sahayata", element: <Sahayata /> },
+
+      // catch-all (must be last)
       { path: "*", element: <NotFound /> },
-  ]},
+    ],
+  },
 ]);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
