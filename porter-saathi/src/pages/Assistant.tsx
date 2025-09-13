@@ -9,6 +9,9 @@ import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SendIcon from "@mui/icons-material/Send";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
 // ---- Speech APIs (browser guards)
 const SpeechRecognition: any =
   (typeof window !== "undefined" && (window as any).SpeechRecognition) ||
@@ -185,13 +188,13 @@ const Assistant: React.FC = () => {
 
     addMsg("user", input);
 
-    // Local reminder handling first (client-side utility)
+    // Local reminder handling first
     const reminderMatch = input.match(
       /(remind(?:\s+me)?|reminder|schedule|pickup)[^0-9]*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i
     );
     if (reminderMatch) { scheduleReminder(input, reminderMatch[2]); return; }
 
-    // Everything else → unified server endpoint
+    // Everything else → server
     try {
       const data = await askServer(input);
       const reply = data?.reply ?? "I’m not sure about that.";
@@ -219,7 +222,7 @@ const Assistant: React.FC = () => {
 
   return (
     <Box sx={{ width: "100%", maxWidth: 960, mx: "auto", py: 3 }}>
-      {/* Quick actions: 3 per row on small+ screens, 1 per row on mobile */}
+      {/* Quick actions */}
       <Grid container spacing={2} justifyContent="center" sx={{ mb: 3 }}>
         {quickChips.map((c) => (
           <Grid item xs={12} sm={4} key={c.key} display="flex" justifyContent="center">
@@ -251,10 +254,35 @@ const Assistant: React.FC = () => {
             </Typography>
           )}
           {messages.map((m, i) => (
-            <Box key={i} sx={{ display: "flex", flexDirection: "column", maxWidth: "85%", ...bubble(m.role), px: 2, py: 1.5 }}>
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
-                {m.content}
-              </Typography>
+            <Box
+              key={i}
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                maxWidth: "85%",
+                ...bubble(m.role),
+                px: 2,
+                py: 1.5,
+              }}
+            >
+              {m.role === "ai" ? (
+                <Box
+                  sx={{
+                    "& p": { m: 0, fontSize: "0.95rem", lineHeight: 1.55 },
+                    "& strong, & b": { fontWeight: 700 },
+                    "& ul, & ol": { pl: 2.5, mt: 0.5, mb: 0.75 },
+                    "& li": { mb: 0.25 },
+                  }}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {m.content}
+                  </ReactMarkdown>
+                </Box>
+              ) : (
+                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                  {m.content}
+                </Typography>
+              )}
               <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, opacity: 0.7 }}>
                 {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </Typography>
