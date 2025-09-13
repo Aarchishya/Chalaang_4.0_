@@ -54,7 +54,7 @@ export default function Home() {
                         <Grid size={{ xs: 12, md: 6 }}>
                             <Stack spacing={{ xs: 2, md: 3 }}>
                                 {/* Badge */}
-                                <Box
+                                {/* <Box
                                     sx={{
                                         display: "inline-flex",
                                         alignItems: "center",
@@ -69,10 +69,24 @@ export default function Home() {
                                     }}
                                 >
                                     <MicOutlined fontSize="small" />
-                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    {/* <Typography variant="body2" sx={{ fontWeight: 600 }}>
                                         Voice-First AI Technology
-                                    </Typography>
-                                </Box>
+                                    </Typography> */}
+                                    
+
+                                {/* </Box> */} 
+                                <Chip
+                                        icon={<Diversity3OutlinedIcon sx={{ fontSize: 18 }} />}
+                                        label="Voice-First AI Technology"
+                                        size="small"
+                                        sx={{
+                                            alignSelf: "flex-start",
+                                            fontWeight: 700,
+                                            bgcolor: (t) => alpha(t.palette.primary.main, 0.08),
+                                            color: "text.primary",
+                                            "& .MuiChip-icon": { color: "text.primary" },
+                                        }}
+                                    />
 
                                 {/* Headline */}
                                 <Typography
